@@ -1,0 +1,23 @@
+# Define the .netrc file path (Windows or Linux/Unix paths)
+if ($env:OS -eq "Windows_NT") {
+    $netrcPath = "$env:USERPROFILE\.netrc"
+} else {
+    $netrcPath = "$env:HOME/.netrc"
+}
+
+# Define the content to write
+$netrcContent = @"
+machine github.com
+login <USERNAME>
+password <PERSONAL_ACCESS_TOKEN>
+"@
+
+# Create or overwrite the .netrc file
+Set-Content -Path $netrcPath -Value $netrcContent -Force
+
+# Set permissions (Linux/Unix)
+if ($env:OS -ne "Windows_NT") {
+    chmod 600 $netrcPath
+}
+
+Write-Host ".netrc file created at: $netrcPath"
