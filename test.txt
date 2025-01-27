@@ -1,23 +1,26 @@
-# Define the .netrc file path (Windows or Linux/Unix paths)
-if ($env:OS -eq "Windows_NT") {
-    $netrcPath = "$env:USERPROFILE\.netrc"
-} else {
-    $netrcPath = "$env:HOME/.netrc"
-}
+Here’s a rewritten version of the goals in a simpler format:
 
-# Define the content to write
-$netrcContent = @"
-machine github.com
-login <USERNAME>
-password <PERSONAL_ACCESS_TOKEN>
-"@
+1. I will ensure stakeholders are satisfied by providing high-quality data (raw, enriched, and curated) for analysis, monitoring, and exploration.
 
-# Create or overwrite the .netrc file
-Set-Content -Path $netrcPath -Value $netrcContent -Force
 
-# Set permissions (Linux/Unix)
-if ($env:OS -ne "Windows_NT") {
-    chmod 600 $netrcPath
-}
+2. I will make data ingestion into the Cybersecurity Data Lake more stable and reliable for all data zones.
 
-Write-Host ".netrc file created at: $netrcPath"
+
+3. I will enhance the onboarding process for internal data ingestion to the Data Lake by improving communication with stakeholders.
+
+
+4. I will improve Azure resource policies and set up better alerts to lower costs and improve stability.
+
+
+5. I will optimize data pipelines in Kula using the latest tools and best practices to reduce expenses.
+
+
+6. I will obtain certifications in Data Engineering and cybersecurity to stay updated with the latest technologies and standards.
+
+
+7. I will develop new pipelines to improve infrastructure and ensure the stability of the Cybersecurity Data Lake.
+
+
+
+Let me know if you'd like any further changes!
+
