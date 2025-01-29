@@ -1,26 +1,53 @@
-Here’s a rewritten version of the goals in a simpler format:
+import os
+import shutil
+from pathlib import Path
 
-1. I will ensure stakeholders are satisfied by providing high-quality data (raw, enriched, and curated) for analysis, monitoring, and exploration.
+def clean_folder(folder_path: str | Path) -> None:
+    """
+    Delete and recreate a folder if it exists. If it doesn't exist, create it.
+    
+    Args:
+        folder_path: String or Path object representing the folder path
+        
+    Returns:
+        None
+        
+    Raises:
+        PermissionError: If the script lacks permissions to delete/create the folder
+        OSError: If there are other OS-level issues when handling the folder
+    """
+    folder_path = Path(folder_path)
+    
+    try:
+        # Remove folder and all contents if it exists
+        if folder_path.exists():
+            if folder_path.is_file():
+                raise OSError(f"{folder_path} is a file, not a directory")
+            shutil.rmtree(folder_path)
+            print(f"Removed existing folder: {folder_path}")
+            
+        # Create new empty folder
+        folder_path.mkdir(parents=True, exist_ok=True)
+        print(f"Created new folder: {folder_path}")
+        
+    except PermissionError:
+        print(f"Error: No permission to modify {folder_path}")
+        raise
+    except OSError as e:
+        print(f"Error handling folder {folder_path}: {e}")
+        raise
 
-
-2. I will make data ingestion into the Cybersecurity Data Lake more stable and reliable for all data zones.
-
-
-3. I will enhance the onboarding process for internal data ingestion to the Data Lake by improving communication with stakeholders.
-
-
-4. I will improve Azure resource policies and set up better alerts to lower costs and improve stability.
-
-
-5. I will optimize data pipelines in Kula using the latest tools and best practices to reduce expenses.
-
-
-6. I will obtain certifications in Data Engineering and cybersecurity to stay updated with the latest technologies and standards.
-
-
-7. I will develop new pipelines to improve infrastructure and ensure the stability of the Cybersecurity Data Lake.
-
-
-
-Let me know if you'd like any further changes!
-
+# Example usage
+if __name__ == "__main__":
+    # Clean a single folder
+    clean_folder("./output_folder")
+    
+    # Clean multiple folders
+    folders_to_clean = [
+        "./data",
+        "./temp",
+        "./output"
+    ]
+    
+    for folder in folders_to_clean:
+        clean_folder(folder)
