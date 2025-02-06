@@ -1,106 +1,32 @@
-import os
-from google.cloud import bigquery
-from azure.storage.filedataset import DataLakeServiceClient
-from azure.identity import DefaultAzureCredential
-import pandas as pd
 from datetime import datetime
-import logging
 
-def transfer_data(req):
-    try:
-        # Configure logging
-        logging.info("Starting data transfer process")
-        
-        # GCP credentials - ensure service account JSON is set in environment
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "path/to/service-account.json"
-        bq_client = bigquery.Client()
-        
-        # Azure credentials
-        account_name = os.environ["AZURE_STORAGE_ACCOUNT"]
-        credential = DefaultAzureCredential()
-        datalake_client = DataLakeServiceClient(
-            account_url=f"https://{account_name}.dfs.core.windows.net",
-            credential=credential
-        )
-        
-        # BigQuery settings
-        project_id = os.environ["GCP_PROJECT_ID"]
-        dataset_id = os.environ["BQ_DATASET"]
-        table_id = os.environ["BQ_TABLE"]
-        
-        # Azure Data Lake settings
-        container_name = os.environ["ADLS_CONTAINER"]
-        directory_name = os.environ["ADLS_DIRECTORY"]
-        
-        # Create filesystem client
-        filesystem_client = datalake_client.get_file_system_client(file_system=container_name)
-        directory_client = filesystem_client.get_directory_client(directory_name)
-        
-        # Query data in chunks
-        query = f"""
-        SELECT *
-        FROM `{project_id}.{dataset_id}.{table_id}`
-        """
-        
-        # Stream data in chunks to handle large datasets
-        chunk_size = 100000  # Adjust based on your memory constraints
-        query_job = bq_client.query(query)
-        
-        # Generate timestamp for file naming
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        chunk_number = 0
-        
-        for rows in query_job.result(page_size=chunk_size):
-            chunk_number += 1
-            
-            # Convert chunk to DataFrame
-            df_chunk = pd.DataFrame([dict(row.items()) for row in rows])
-            
-            if not df_chunk.empty:
-                # Convert to parquet format
-                parquet_data = df_chunk.to_parquet()
-                
-                # Create file name with timestamp and chunk number
-                file_name = f"data_{timestamp}_chunk_{chunk_number}.parquet"
-                file_client = directory_client.create_file(file_name)
-                
-                # Upload data
-                file_client.append_data(data=parquet_data, offset=0)
-                file_client.flush_data(len(parquet_data))
-                
-                logging.info(f"Uploaded chunk {chunk_number} to {file_name}")
-            
-        return {
-            "status": "success",
-            "message": f"Transferred {chunk_number} chunks successfully",
-            "timestamp": timestamp
-        }
-        
-    except Exception as e:
-        logging.error(f"Error in transfer process: {str(e)}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-# Function app trigger (HTTP trigger example)
-def main(req):
-    logging.info('Python HTTP trigger function processed a request.')
+def convert_pipeline_expression(trigger_time):
+    # Format the date part
+    formatted_date = trigger_time.strftime('%Y/%m/%d')
     
-    try:
-        result = transfer_data(req)
-        return {
-            "status": 200,
-            "body": result,
-            "headers": {
-                "Content-Type": "application/json"
-            }
-        }
-    except Exception as e:
-        return {
-            "status": 500,
-            "body": {"error": str(e)},
-            "headers": {
-                "Content-Type": "application/json"
-            }
-        }
+    # Calculate ticks (Microsoft ticks are measured from 1601-01-01)
+    # We need to convert to Unix epoch (1970-01-01) equivalent
+    epoch = datetime(1970, 1, 1)
+    ticks_since_epoch = int((trigger_time - epoch).total_seconds() * 10000000)
+    
+    # Combine the parts with a slash
+    return f"{formatted_date}{ticks_since_epoch}/"
+
+# Example usage:
+current_time = datetime.now()
+result = convert_pipeline_expression(current_time)
+print(result)
+```
+
+This Python code:
+1. Takes a datetime object as input (equivalent to pipeline().TriggerTime)
+2. Formats the date part using strftime() (equivalent to formatDateTime())
+3. Calculates the ticks since Unix epoch and divides by 10000000 (equivalent to the div/sub/ticks operations)
+4. Concatenates the parts with a slash
+
+The main differences to note:
+- Python uses datetime objects instead of ADF's pipeline().TriggerTime
+- The ticks calculation is simplified to use Python's datetime arithmetic
+- String concatenation is done using f-strings instead of concat()
+
+Would you like me to explain any part of this conversion in more detail?
