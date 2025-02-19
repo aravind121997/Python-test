@@ -1,53 +1,18 @@
-import os
-import shutil
-from pathlib import Path
+import pandas as pd
 
-def clean_folder(folder_path: str | Path) -> None:
-    """
-    Delete and recreate a folder if it exists. If it doesn't exist, create it.
-    
-    Args:
-        folder_path: String or Path object representing the folder path
-        
-    Returns:
-        None
-        
-    Raises:
-        PermissionError: If the script lacks permissions to delete/create the folder
-        OSError: If there are other OS-level issues when handling the folder
-    """
-    folder_path = Path(folder_path)
-    
-    try:
-        # Remove folder and all contents if it exists
-        if folder_path.exists():
-            if folder_path.is_file():
-                raise OSError(f"{folder_path} is a file, not a directory")
-            shutil.rmtree(folder_path)
-            print(f"Removed existing folder: {folder_path}")
-            
-        # Create new empty folder
-        folder_path.mkdir(parents=True, exist_ok=True)
-        print(f"Created new folder: {folder_path}")
-        
-    except PermissionError:
-        print(f"Error: No permission to modify {folder_path}")
-        raise
-    except OSError as e:
-        print(f"Error handling folder {folder_path}: {e}")
-        raise
+def filter_excel(input_file, output_file, column_name): # Load the Excel file df = pd.read_excel(input_file)
 
-# Example usage
-if __name__ == "__main__":
-    # Clean a single folder
-    clean_folder("./output_folder")
-    
-    # Clean multiple folders
-    folders_to_clean = [
-        "./data",
-        "./temp",
-        "./output"
-    ]
-    
-    for folder in folders_to_clean:
-        clean_folder(folder)
+# Filter rows where the column does not start with 'Ritm00'
+df_filtered = df[~df[column_name].astype(str).str.startswith('Ritm00')]
+
+# Save the filtered data to a new file
+df_filtered.to_excel(output_file, index=False)
+
+print(f"Filtered data saved to {output_file}")
+
+Example usage
+
+input_file = "data.xlsx"  # Replace with your file path output_file = "filtered_data.xlsx"  # Output file name column_name = "YourColumnName"  # Replace with the actual column name
+
+filter_excel(input_file, output_file, column_name)
+
