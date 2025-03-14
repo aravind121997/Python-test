@@ -1,18 +1,48 @@
-import pandas as pd
+from pyspark.sql import DataFrame
+from typing import Dict, List, Tuple
 
-def filter_excel(input_file, output_file, column_name): # Load the Excel file df = pd.read_excel(input_file)
-
-# Filter rows where the column does not start with 'Ritm00'
-df_filtered = df[~df[column_name].astype(str).str.startswith('Ritm00')]
-
-# Save the filtered data to a new file
-df_filtered.to_excel(output_file, index=False)
-
-print(f"Filtered data saved to {output_file}")
-
-Example usage
-
-input_file = "data.xlsx"  # Replace with your file path output_file = "filtered_data.xlsx"  # Output file name column_name = "YourColumnName"  # Replace with the actual column name
-
-filter_excel(input_file, output_file, column_name)
-
+def compare_dataframe_schemas(df1: DataFrame, df2: DataFrame, df1_name: str = "DataFrame 1", df2_name: str = "DataFrame 2") -> Dict:
+    """
+    Compare schemas of two PySpark DataFrames and return detailed differences.
+    
+    Args:
+        df1: First DataFrame to compare
+        df2: Second DataFrame to compare
+        df1_name: Name for the first DataFrame (for reporting)
+        df2_name: Name for the second DataFrame (for reporting)
+        
+    Returns:
+        Dictionary containing schema differences with details
+    """
+    # Get schema information from both DataFrames
+    schema1 = {field.name: field.dataType.simpleString() for field in df1.schema.fields}
+    schema2 = {field.name: field.dataType.simpleString() for field in df2.schema.fields}
+    
+    # Find common columns and unique columns
+    cols1 = set(schema1.keys())
+    cols2 = set(schema2.keys())
+    
+    common_cols = cols1.intersection(cols2)
+    only_in_df1 = cols1 - cols2
+    only_in_df2 = cols2 - cols1
+    
+    # For common columns, check type differences
+    type_diffs = []
+    for col in common_cols:
+        if schema1[col] != schema2[col]:
+            type_diffs.append({
+                "column": col,
+                f"{df1_name}_type": schema1[col],
+                f"{df2_name}_type": schema2[col]
+            })
+    
+    # Build result dictionary
+    result = {
+        "common_columns_count": len(common_cols),
+        "columns_only_in_first": list(only_in_df1),
+        "columns_only_in_second": list(only_in_df2),
+        "columns_with_different_types": type_diffs,
+        "is_identical": len(only_in_df1) == 0 and len(only_in_df2) == 0 and len(type_diffs) == 0
+    }
+    
+    return result
