@@ -1,33 +1,117 @@
-Here are some in-depth Python questions focused on scalability and handling high data volumes for a Lead Data Engineer interview:
+from pyspark.sql import SparkSession
+from typing import Dict, Any
 
-## Python Scalability & High-Volume Data Handling
+def compare_dataframe_schemas(df1, df2) -> Dict[str, Any]:
+    """
+    Compare schemas of two DataFrames and return detailed differences.
+    
+    Args:
+        df1 (DataFrame): First Spark DataFrame
+        df2 (DataFrame): Second Spark DataFrame
+    
+    Returns:
+        Dict containing schema comparison results
+    """
+    # Get schemas as dictionaries
+    schema1 = {field.name: str(field.dataType) for field in df1.schema.fields}
+    schema2 = {field.name: str(field.dataType) for field in df2.schema.fields}
+    
+    # Initialize results dictionary
+    schema_diff = {
+        'missing_in_first': [],
+        'missing_in_second': [],
+        'type_mismatches': {},
+        'different_order': False
+    }
+    
+    # Check for missing columns
+    schema_diff['missing_in_first'] = list(set(schema2.keys()) - set(schema1.keys()))
+    schema_diff['missing_in_second'] = list(set(schema1.keys()) - set(schema2.keys()))
+    
+    # Check column types
+    common_columns = set(schema1.keys()) & set(schema2.keys())
+    for col in common_columns:
+        if schema1[col] != schema2[col]:
+            schema_diff['type_mismatches'][col] = {
+                'first_df_type': schema1[col],
+                'second_df_type': schema2[col]
+            }
+    
+    # Check column order
+    if list(schema1.keys()) != list(schema2.keys()):
+        schema_diff['different_order'] = True
+    
+    return schema_diff
 
-1. Explain how you would optimize a Python-based ETL pipeline that needs to process 10+ TB of data daily. What specific libraries, techniques, and architecture choices would you make?
+def print_schema_differences(df1, df2):
+    """
+    Print out detailed schema differences between two DataFrames.
+    
+    Args:
+        df1 (DataFrame): First Spark DataFrame
+        df2 (DataFrame): Second Spark DataFrame
+    """
+    differences = compare_dataframe_schemas(df1, df2)
+    
+    print("Schema Comparison Results:")
+    
+    # Print missing columns
+    if differences['missing_in_first']:
+        print("\nColumns missing in FIRST DataFrame:")
+        for col in differences['missing_in_first']:
+            print(f"- {col}")
+    
+    if differences['missing_in_second']:
+        print("\nColumns missing in SECOND DataFrame:")
+        for col in differences['missing_in_second']:
+            print(f"- {col}")
+    
+    # Print type mismatches
+    if differences['type_mismatches']:
+        print("\nColumns with Type Mismatches:")
+        for col, types in differences['type_mismatches'].items():
+            print(f"- {col}:")
+            print(f"  First DataFrame type:  {types['first_df_type']}")
+            print(f"  Second DataFrame type: {types['second_df_type']}")
+    
+    # Print column order difference
+    if differences['different_order']:
+        print("\nWARNING: Column order is different between the two DataFrames")
+    
+    # Final summary
+    if (not differences['missing_in_first'] and 
+        not differences['missing_in_second'] and 
+        not differences['type_mismatches'] and 
+        not differences['different_order']):
+        print("\nNo schema differences found! Schemas are identical.")
 
-2. How would you implement a memory-efficient Python solution to process datasets that are larger than available RAM? Walk through your approach with specific code examples.
+# Example usage
+def main():
+    # Create a SparkSession
+    spark = SparkSession.builder.appName("SchemaComparison").getOrCreate()
+    
+    # Replace these with your actual DataFrames
+    df1 = spark.createDataFrame([
+        (1, "John", 25.5),
+        (2, "Jane", 30.0)
+    ], ["id", "name", "salary"])
+    
+    df2 = spark.createDataFrame([
+        (1, "John", "25.5"),  # Note the type change to string
+        (2, "Jane", "30.0")
+    ], ["id", "name", "salary"])
+    
+    # Print detailed schema differences
+    print_schema_differences(df1, df2)
+    
+    # If you want to get the differences as a dictionary for further processing
+    differences = compare_dataframe_schemas(df1, df2)
+    print("\nRaw Differences Dictionary:")
+    print(differences)
+    
+    # Close the SparkSession
+    spark.stop()
 
-3. Compare and contrast Pandas, Dask, and PySpark for large-scale data processing. In what scenarios would you choose one over the others, and what are the performance implications of each?
-
-4. Describe your experience with Python's multiprocessing and asyncio libraries. How would you implement a scalable worker pattern to parallelize data processing tasks with proper error handling and monitoring?
-
-5. How would you design a Python-based streaming data processing system capable of handling 100,000+ events per second? What libraries and architectural patterns would you employ?
-
-6. Explain your approach to profiling and optimizing Python code for data-intensive applications. What tools do you use to identify bottlenecks, and what are common optimization techniques you've applied?
-
-7. How would you implement a distributed caching mechanism in Python to accelerate repetitive data operations? Provide specific examples of libraries and implementation details.
-
-8. Describe how you would use Python to implement a data partitioning strategy for extremely large datasets. What factors would influence your partitioning approach?
-
-9. What strategies do you employ when writing Python code that needs to interface with both relational databases and NoSQL systems at scale? How do you optimize database connections and query execution?
-
-10. Explain your approach to implementing backpressure mechanisms in Python data pipelines to handle variable load and prevent system overload.
-
-11. How would you implement efficient real-time aggregations on high-velocity data streams using Python? What data structures and algorithms would you use?
-
-12. Discuss the challenges of Python's Global Interpreter Lock (GIL) in high-throughput data processing applications and your strategies for mitigating its impact.
-
-13. How would you design a fault-tolerant, distributed Python application for processing mission-critical data? What patterns and libraries would you use to ensure reliability and recoverability?
-
-14. Explain how you would use Python with Azure Functions to implement a scalable, serverless data processing architecture. What design patterns would you apply to handle varying loads efficiently?
-
-15. Describe your experience optimizing Python code to leverage GPU acceleration for data processing tasks. What libraries and techniques have you found most effective?
+# Uncomment and run the main function when you have your DataFrames
+# if __name__ == "__main__":
+#     main()
