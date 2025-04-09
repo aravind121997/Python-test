@@ -1,59 +1,86 @@
-Here's the updated function that gets dates from the start date until yesterday:
+I'll write a Python function that converts the curl request shown in your image to a Python requests equivalent. The function will take dynamic parameters and return the download link from the response.
+
+Let me create this for you:
 
 ```python
-from datetime import datetime, timedelta
+import requests
+import json
 
-def generate_daily_dates(start_date_str):
+def generate_temporary_link(base_url, token, bucket_name, folder, sub_path, expired_time=300):
     """
-    Generate a list of dates in 'yyyymmdd' format from start date until yesterday.
+    Generate a temporary download link by converting the curl request to Python requests.
     
-    Args:
-        start_date_str (str): Starting date in 'yyyymmdd' format
-        
+    Parameters:
+    - base_url (str): The base URL for the API endpoint
+    - token (str): Authentication token
+    - bucket_name (str): Name of the storage bucket
+    - folder (str): Folder path
+    - sub_path (str): Dynamic path to the file
+    - expired_time (int): Expiration time in seconds, defaults to 300
+    
     Returns:
-        list: List of date strings in 'yyyymmdd' format
+    - str: The download link if successful
+    - None: If the request fails
     """
-    # Parse the start date string into a datetime object
-    start_date = datetime.strptime(start_date_str, '%Y%m%d')
+    # Set up the headers
+    headers = {
+        'accept': 'application/json',
+        'ccstoken': token,
+        'Content-Type': 'application/json'
+    }
     
-    # Get yesterday's date
-    yesterday = datetime.now() - timedelta(days=1)
+    # Set up the payload
+    payload = {
+        "bucket_name": bucket_name,
+        "folder": folder,
+        "sub_path": sub_path,
+        "expired_time_in_second": expired_time
+    }
     
-    # Make sure the yesterday date has time set to midnight for proper comparison
-    yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Make the POST request
+    url = f"{base_url}/generate-temporary-link"
+    response = requests.post(url, headers=headers, data=json.dumps(payload))
     
-    # Check if start date is in the future or today
-    if start_date >= datetime.now().replace(hour=0, minute=0, second=0, microsecond=0):
-        return []  # Return empty list if start date is in the future or today
-    
-    # Generate the list of dates
-    date_list = []
-    current_date = start_date
-    
-    while current_date <= yesterday:
-        date_str = current_date.strftime('%Y%m%d')
-        date_list.append(date_str)
-        current_date += timedelta(days=1)
-    
-    return date_list
+    # Check if the request was successful
+    if response.status_code == 200:
+        try:
+            # Parse the response JSON
+            response_data = response.json()
+            # Extract the download link from the response
+            download_link = response_data.get('data', {}).get('contents', [{}])[0].get('download_link', '')
+            return download_link
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Error processing response: {e}")
+            print(f"Response content: {response.text}")
+            return None
+    else:
+        print(f"Request failed with status code: {response.status_code}")
+        print(f"Response content: {response.text}")
+        return None
 
 # Example usage:
 if __name__ == "__main__":
-    # Generate dates from January 1, 2025 until yesterday
-    dates = generate_daily_dates('20250101')
-    print(f"Generated {len(dates)} dates from 20250101 until yesterday")
-    if dates:
-        print(f"First date: {dates[0]}, Last date: {dates[-1]}")
+    # Replace these values with your actual values
+    base_url = "https://example.com/api"
+    token = "your_token_here"
+    bucket_name = "your-bucket-name"
+    folder = "your-folder"
+    sub_path = "your/dynamic/path"
+    
+    download_link = generate_temporary_link(base_url, token, bucket_name, folder, sub_path)
+    
+    if download_link:
+        print(f"Download link: {download_link}")
+    else:
+        print("Failed to generate download link")
 ```
 
-This updated function:
-1. Takes a start date as a string in 'yyyymmdd' format
-2. Calculates yesterday's date (current date minus one day)
-3. Generates dates incrementally starting from the provided date until yesterday
-4. Returns an empty list if the start date is in the future or today
-5. Returns all dates as a list in 'yyyymmdd' format
+This function:
 
-The function handles edge cases such as:
-- Start date in the future
-- Start date is today
-- Start date is after yesterday
+1. Takes the dynamic parameters from the curl command (base_url, token, bucket_name, folder, sub_path, and expired_time)
+2. Constructs the appropriate headers and JSON payload
+3. Makes a POST request to the specified endpoint
+4. Parses the response to extract the download link
+5. Handles potential errors and returns the download link if successful
+
+The function follows the structure seen in your curl command and expects the same response format with the download link in the path `data.contents[0].download_link`.
