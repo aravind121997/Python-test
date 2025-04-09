@@ -1,117 +1,45 @@
-from pyspark.sql import SparkSession
-from typing import Dict, Any
+Here's a Python function that fetches dates incrementally for every day in 'yyyymmdd' format, starting from a given date string:
 
-def compare_dataframe_schemas(df1, df2) -> Dict[str, Any]:
+```python
+from datetime import datetime, timedelta
+
+def generate_daily_dates(start_date_str, num_days=30):
     """
-    Compare schemas of two DataFrames and return detailed differences.
+    Generate a list of dates in 'yyyymmdd' format, incrementing one day at a time.
     
     Args:
-        df1 (DataFrame): First Spark DataFrame
-        df2 (DataFrame): Second Spark DataFrame
-    
+        start_date_str (str): Starting date in 'yyyymmdd' format
+        num_days (int, optional): Number of days to generate. Defaults to 30.
+        
     Returns:
-        Dict containing schema comparison results
+        list: List of date strings in 'yyyymmdd' format
     """
-    # Get schemas as dictionaries
-    schema1 = {field.name: str(field.dataType) for field in df1.schema.fields}
-    schema2 = {field.name: str(field.dataType) for field in df2.schema.fields}
+    # Parse the start date string into a datetime object
+    start_date = datetime.strptime(start_date_str, '%Y%m%d')
     
-    # Initialize results dictionary
-    schema_diff = {
-        'missing_in_first': [],
-        'missing_in_second': [],
-        'type_mismatches': {},
-        'different_order': False
-    }
+    # Generate the list of dates
+    date_list = []
+    for i in range(num_days):
+        current_date = start_date + timedelta(days=i)
+        date_str = current_date.strftime('%Y%m%d')
+        date_list.append(date_str)
     
-    # Check for missing columns
-    schema_diff['missing_in_first'] = list(set(schema2.keys()) - set(schema1.keys()))
-    schema_diff['missing_in_second'] = list(set(schema1.keys()) - set(schema2.keys()))
-    
-    # Check column types
-    common_columns = set(schema1.keys()) & set(schema2.keys())
-    for col in common_columns:
-        if schema1[col] != schema2[col]:
-            schema_diff['type_mismatches'][col] = {
-                'first_df_type': schema1[col],
-                'second_df_type': schema2[col]
-            }
-    
-    # Check column order
-    if list(schema1.keys()) != list(schema2.keys()):
-        schema_diff['different_order'] = True
-    
-    return schema_diff
+    return date_list
 
-def print_schema_differences(df1, df2):
-    """
-    Print out detailed schema differences between two DataFrames.
-    
-    Args:
-        df1 (DataFrame): First Spark DataFrame
-        df2 (DataFrame): Second Spark DataFrame
-    """
-    differences = compare_dataframe_schemas(df1, df2)
-    
-    print("Schema Comparison Results:")
-    
-    # Print missing columns
-    if differences['missing_in_first']:
-        print("\nColumns missing in FIRST DataFrame:")
-        for col in differences['missing_in_first']:
-            print(f"- {col}")
-    
-    if differences['missing_in_second']:
-        print("\nColumns missing in SECOND DataFrame:")
-        for col in differences['missing_in_second']:
-            print(f"- {col}")
-    
-    # Print type mismatches
-    if differences['type_mismatches']:
-        print("\nColumns with Type Mismatches:")
-        for col, types in differences['type_mismatches'].items():
-            print(f"- {col}:")
-            print(f"  First DataFrame type:  {types['first_df_type']}")
-            print(f"  Second DataFrame type: {types['second_df_type']}")
-    
-    # Print column order difference
-    if differences['different_order']:
-        print("\nWARNING: Column order is different between the two DataFrames")
-    
-    # Final summary
-    if (not differences['missing_in_first'] and 
-        not differences['missing_in_second'] and 
-        not differences['type_mismatches'] and 
-        not differences['different_order']):
-        print("\nNo schema differences found! Schemas are identical.")
+# Example usage:
+if __name__ == "__main__":
+    # Generate 10 days starting from January 1, 2025
+    dates = generate_daily_dates('20250101', 10)
+    print(dates)
+    # Output: ['20250101', '20250102', '20250103', '20250104', '20250105', 
+    #          '20250106', '20250107', '20250108', '20250109', '20250110']
+```
 
-# Example usage
-def main():
-    # Create a SparkSession
-    spark = SparkSession.builder.appName("SchemaComparison").getOrCreate()
-    
-    # Replace these with your actual DataFrames
-    df1 = spark.createDataFrame([
-        (1, "John", 25.5),
-        (2, "Jane", 30.0)
-    ], ["id", "name", "salary"])
-    
-    df2 = spark.createDataFrame([
-        (1, "John", "25.5"),  # Note the type change to string
-        (2, "Jane", "30.0")
-    ], ["id", "name", "salary"])
-    
-    # Print detailed schema differences
-    print_schema_differences(df1, df2)
-    
-    # If you want to get the differences as a dictionary for further processing
-    differences = compare_dataframe_schemas(df1, df2)
-    print("\nRaw Differences Dictionary:")
-    print(differences)
-    
-    # Close the SparkSession
-    spark.stop()
+This function:
+1. Takes a start date as a string in 'yyyymmdd' format
+2. Optionally takes the number of days to generate (defaults to 30)
+3. Converts the start date string to a datetime object
+4. Creates a list of date strings by incrementing one day at a time
+5. Returns the list of date strings, each in 'yyyymmdd' format
 
-# Uncomment and run the main function when you have your DataFrames
-# if __name__ == "__main__":
-#     main()
+You can modify this function to suit your specific needs, such as returning a generator instead of a list (for memory efficiency) or using different date formats.
