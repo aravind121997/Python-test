@@ -1,165 +1,122 @@
 import requests
-import json
 from azure.identity import DefaultAzureCredential
+from azure.mgmt.resource import ResourceManagementClient
+from azure.mgmt.network import NetworkManagementClient
 
 def get_auth_header():
     """
-    Create authentication header for Azure REST API calls
+    Obtain authentication header for Azure API calls
     """
     try:
-        # Get Azure credentials and token
+        # Use DefaultAzureCredential for authentication
         credential = DefaultAzureCredential()
-        # Get access token for Azure Resource Manager
-        token = credential.get_token("https://management.azure.com/.default")
+        
+        # Get access token
+        token = credential.get_token('https://management.azure.com/.default')
         
         # Create authorization header
         auth_header = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token.token}"
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token.token}'
         }
+        
         return auth_header
     except Exception as e:
         print(f"Error getting auth header: {e}")
-        raise e
+        raise
 
-def process_application_gateway_details():
-    # Get authentication header
-    auth_header = get_auth_header()
-
-    # Azure Resource Graph API endpoint URL to get Application Gateway resources
-    get_app_gw_resources_url = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01"
-
-    # Query body to get Application Gateway resources
-    get_app_gw_resources_body = {
-        "query": "Resources | where type == 'microsoft.network/applicationgateways'"
-    }
-
-    # Convert body to JSON
-    get_app_gw_resources_body_json = json.dumps(get_app_gw_resources_body)
-
-    # Make API request to get App Gateway resources
-    get_app_gw_resources_response = requests.post(
-        url=get_app_gw_resources_url,
-        headers=auth_header,
-        data=get_app_gw_resources_body_json
-    )
-
-    # Convert response to JSON object
-    get_app_gw_resources_object = json.loads(get_app_gw_resources_response.content)
-
-    # Initialize list to store App Gateway details
-    app_gw_details_list = []
-
-    # Process each Application Gateway resource
-    for app_gw_resource in get_app_gw_resources_object.get('data', []):
-        # Extract ITSO and ITSO Delegate tags
-        itso = app_gw_resource.get('tags', {}).get('ITSO', '')
-        itso_delegate = app_gw_resource.get('tags', {}).get('ITSO Delegate', '')
-
-        # Print processing information
-        print(f"Processing AppGW Instance - {app_gw_resource.get('name', '')}")
-
-        # Construct URL to get detailed App Gateway information
-        get_app_gw_url = (
-            f"https://management.azure.com/subscriptions/{app_gw_resource.get('subscriptionId', '')}"
-            f"/resourceGroups/{app_gw_resource.get('resourceGroup', '')}"
-            f"/providers/Microsoft.Network/applicationGateways/{app_gw_resource.get('name', '')}"
-            f"?api-version=2024-05-01"
+def get_front_door_resources():
+    """
+    Retrieve and process Front Door resources
+    """
+    try:
+        # Get authentication header
+        auth_header = get_auth_header()
+        
+        # Construct the URL for retrieving resources
+        subscription_id = '<your-subscription-id>'  # Replace with your subscription ID
+        resource_group = '<your-resource-group>'  # Replace with your resource group
+        
+        get_fdr_url = (
+            f'https://management.azure.com/subscriptions/{subscription_id}/'
+            f'resourceGroups/{resource_group}/providers/Microsoft.Network/'
+            f'frontDoors?api-version=2022-10-01'
         )
+        
+        # Make the API request
+        response = requests.get(get_fdr_url, headers=auth_header)
+        response.raise_for_status()
+        
+        # Parse the response
+        front_door_resources = response.json()
+        front_door_object_array = []
+        
+        # Process each Front Door resource
+        for fd_resource in front_door_resources.get('value', []):
+            row_value = {
+                'FrontDoorName': fd_resource.get('name', ''),
+                'ResourceGroup': fd_resource.get('resourceGroup', ''),
+                'SubscriptionId': subscription_id,
+                'ITSO': fd_resource.get('tags', {}).get('ITSO', ''),
+                'SitsoDelegate': fd_resource.get('tags', {}).get('SitsoDelegate', ''),
+                'EndpointUrl': '',  # You may need to extract this based on your specific resource structure
+                'WAFPolicyName': '',
+                'WAFMode': '',
+                'RateLimitAction': '',
+                'RateLimitThreshold': '',
+                'ManagedRuleSetVersion': '',
+                'ManagedRuleSetName': ''
+            }
+            
+            # Process WAF policies and managed rule sets
+            waf_policy_link = fd_resource.get('properties', {}).get('webApplicationFirewallPolicyLink', {})
+            if waf_policy_link:
+                waf_policy_url = waf_policy_link.get('id', '')
+                if waf_policy_url:
+                    # You would make another API call here to get WAF policy details
+                    # This is a placeholder for that logic
+                    waf_policy_response = requests.get(waf_policy_url, headers=auth_header)
+                    waf_policy_data = waf_policy_response.json()
+                    
+                    # Extract WAF policy details
+                    row_value['WAFPolicyName'] = waf_policy_data.get('name', '')
+                    row_value['WAFMode'] = waf_policy_data.get('properties', {}).get('policySettings', {}).get('mode', '')
+                    
+                    # Process custom rules and managed rule sets
+                    custom_rules = waf_policy_data.get('properties', {}).get('customRules', {}).get('rules', [])
+                    managed_rule_sets = waf_policy_data.get('properties', {}).get('managedRules', {}).get('managedRuleSets', [])
+                    
+                    for custom_rule in custom_rules:
+                        if custom_rule.get('ruleType') == 'RateLimitRule':
+                            row_value['RateLimitAction'] = custom_rule.get('action', '')
+                            row_value['RateLimitThreshold'] = custom_rule.get('rateLimitThreshold', '')
+                    
+                    for managed_rule_set in managed_rule_sets:
+                        if managed_rule_set.get('ruleSetType') == 'Microsoft.BotManagerRuleSet':
+                            row_value['ManagedRuleSetVersion'] = managed_rule_set.get('ruleSetVersion', '')
+                        else:
+                            row_value['ManagedRuleSetName'] = managed_rule_set.get('ruleSetType', '')
+                            row_value['ManagedRuleSetVersion'] = managed_rule_set.get('ruleSetVersion', '')
+            
+            front_door_object_array.append(row_value)
+        
+        return front_door_object_array
+    
+    except Exception as e:
+        print(f"Error processing Front Door resources: {e}")
+        raise
 
-        # Make API request to get App Gateway details
-        get_app_gw_response = requests.get(
-            url=get_app_gw_url,
-            headers=auth_header
-        )
+def main():
+    try:
+        # Retrieve and process Front Door resources
+        front_door_resources = get_front_door_resources()
+        
+        # Print or further process the resources
+        for resource in front_door_resources:
+            print(resource)
+    
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
-        # Parse App Gateway response
-        app_gw_details = get_app_gw_response.json()
-
-        # Initialize variables for processing
-        app_gw_endpoints = []
-        waf_policy_name = ""
-        split_waf_id = ""
-        rate_limit_action = ""
-        rate_limit_threshold = ""
-        bot_ruleset_version = ""
-        managed_ruleset_name = ""
-        managed_ruleset_version = ""
-
-        # Process HTTP Listeners
-        for listener in app_gw_details.get('properties', {}).get('httpListeners', []):
-            if listener.get('properties', {}).get('hostName'):
-                app_gw_endpoints.append(listener['properties']['hostName'])
-
-        # Process WAF Policy
-        waf_policy_ref = app_gw_details.get('properties', {}).get('firewallPolicy', {}).get('id', '')
-        if waf_policy_ref:
-            split_waf_id = waf_policy_ref.split('/')
-
-            # Get WAF Policy details URL
-            get_app_gw_waf_url = (
-                f"https://management.azure.com/subscriptions/{app_gw_resource.get('subscriptionId', '')}"
-                f"/resourceGroups/{app_gw_resource.get('resourceGroup', '')}"
-                f"/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/{waf_policy_ref.split('/')[-1]}"
-                f"?api-version=2024-05-01"
-            )
-
-            # Make API request to get WAF Policy details
-            get_app_gw_waf_response = requests.get(
-                url=get_app_gw_waf_url,
-                headers=auth_header
-            )
-
-            waf_policy_details = get_app_gw_waf_response.json()
-
-            # Process custom rules
-            for custom_rule in waf_policy_details.get('properties', {}).get('customRules', []):
-                if custom_rule.get('ruleType') == 'RateLimitRule':
-                    rate_limit_action = custom_rule.get('action', '')
-                    rate_limit_threshold = custom_rule.get('rateLimitThreshold', '')
-
-            # Process managed rule sets
-            managed_rulesets = waf_policy_details.get('properties', {}).get('managedRules', {}).get('managedRuleSets', [])
-            for ruleset in managed_rulesets:
-                if ruleset.get('ruleSetType') == 'Microsoft.BotManagerRuleSet':
-                    bot_ruleset_version = ruleset.get('ruleSetVersion', '')
-                else:
-                    managed_ruleset_name = ruleset.get('ruleSetType', '')
-                    managed_ruleset_version = ruleset.get('ruleSetVersion', '')
-
-        # Compile all details into a dictionary
-        app_gw_details_entry = {
-            'name': app_gw_resource.get('name', ''),
-            'resourceGroup': app_gw_resource.get('resourceGroup', ''),
-            'subscriptionId': app_gw_resource.get('subscriptionId', ''),
-            'itso': itso,
-            'itsoDelegate': itso_delegate,
-            'endpoints': app_gw_endpoints,
-            'wafPolicyName': waf_policy_name,
-            'rateLimit': {
-                'action': rate_limit_action,
-                'threshold': rate_limit_threshold
-            },
-            'managedRuleset': {
-                'name': managed_ruleset_name,
-                'version': managed_ruleset_version
-            },
-            'botManagerRulesetVersion': bot_ruleset_version
-        }
-
-        app_gw_details_list.append(app_gw_details_entry)
-
-    # Print summary of findings
-    print(f"\nFound {len(app_gw_details_list)} Application Gateway profiles")
-    for profile in app_gw_details_list:
-        print(f"Profile: {profile['name']}")
-        print(f"  Resource Group: {profile['resourceGroup']}")
-        print(f"  Endpoints: {', '.join(profile['endpoints'])}")
-        print(f"  WAF Rate Limit: {profile['rateLimit']}")
-        print("  ----------------")
-
-    return app_gw_details_list
-
-# Run the script
-if __name__ == "__main__":
-    app_gw_details = process_application_gateway_details()
+if __name__ == '__main__':
+    main()
