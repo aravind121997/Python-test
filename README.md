@@ -1,8 +1,13 @@
-import requests
 import json
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import os
+
+# Import requests inside functions to avoid circular import issues
+try:
+    import requests
+except ImportError:
+    requests = None
 
 def get_azure_bearer_token(
     tenant_id: str,
@@ -33,6 +38,9 @@ def get_azure_bearer_token(
         requests.exceptions.RequestException: If the HTTP request fails
         ValueError: If the response doesn't contain expected token data
     """
+    
+    # Import requests here to avoid circular import
+    import requests
     
     # Azure AD token endpoint
     token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -78,6 +86,8 @@ def get_azure_bearer_token(
         raise requests.exceptions.RequestException(f"Failed to fetch token: {str(e)}")
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON response: {str(e)}")
+    except Exception as e:
+        raise ValueError(f"Unexpected error: {str(e)}")
 
 def get_azure_bearer_token_from_env(
     scope: str = "https://graph.microsoft.com/.default"
