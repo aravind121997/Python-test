@@ -1,372 +1,199 @@
+# Databricks notebook compatible
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.types import StructType, StructField, StringType
+from typing import List, Dict, Any, Optional
 import requests
 import json
-import csv
-from datetime import datetime
 import logging
+import time
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ------------------ Configurable Values ------------------
+TENANT_ID = dbutils.secrets.get("graph", "tenant_id")
+CLIENT_ID = dbutils.secrets.get("graph", "client_id")
+CLIENT_SECRET = dbutils.secrets.get("graph", "client_secret")
+
+INPUT_CATALOG_TABLE = "my_catalog.my_schema.group_ids_table"
+OUTPUT_TABLE = "my_catalog.my_schema.group_members_output"
+
+BATCH_SIZE = 20
+MAX_WORKERS = 10
+RATE_LIMIT_DELAY = 1.0
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF = 1.0
+# ---------------------------------------------------------
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-def get_access_token(client_id, client_secret, tenant_id, tenant_name=None):
-    """
-    Extract access token using service principal authentication
-    
-    Args:
-        client_id (str): Azure AD application (client) ID
-        client_secret (str): Azure AD application client secret
-        tenant_id (str): Azure AD tenant ID
-        tenant_name (str): Azure AD tenant name (optional)
-    
-    Returns:
-        str: Access token for Azure REST API calls
-    """
-    try:
-        # Azure AD OAuth2 token endpoint
-        token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-        
-        # Request payload for client credentials flow
-        payload = {
-            'grant_type': 'client_credentials',
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'scope': 'https://management.azure.com/.default'
-        }
-        
-        # Request headers
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        logger.info(f"Requesting access token for tenant: {tenant_name or tenant_id}")
-        
-        # Make the token request
-        response = requests.post(token_url, data=payload, headers=headers)
-        response.raise_for_status()
-        
-        token_data = response.json()
-        access_token = token_data.get('access_token')
-        
-        if not access_token:
-            raise ValueError("No access token received in response")
-            
-        logger.info("Access token retrieved successfully")
-        return access_token
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error requesting access token: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error during token extraction: {str(e)}")
-        raise
+@dataclass
+class GraphConfig:
+    tenant_id: str
+    client_id: str
+    client_secret: str
+    base_url: str = "https://graph.microsoft.com/v1.0"
+    batch_size: int = BATCH_SIZE
+    max_workers: int = MAX_WORKERS
+    retry_attempts: int = RETRY_ATTEMPTS
+    retry_backoff: float = RETRY_BACKOFF
+    rate_limit_delay: float = RATE_LIMIT_DELAY
 
-def apl_gateway_details(client_id, client_secret, tenant_id, tenant_name, subscription_id):
-    """
-    Extract Azure Application Gateway details
-    
-    Args:
-        client_id (str): Azure AD application (client) ID
-        client_secret (str): Azure AD application client secret
-        tenant_id (str): Azure AD tenant ID
-        tenant_name (str): Azure AD tenant name
-        subscription_id (str): Azure subscription ID
-    
-    Returns:
-        list: List of application gateway details
-    """
-    try:
-        # Get access token
-        access_token = get_access_token(client_id, client_secret, tenant_id, tenant_name)
-        
-        # Set up headers for Azure REST API calls
-        headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json'
-        }
-        
-        # Get Application Gateway resources
-        appgw_url = f"https://management.azure.com/subscriptions/{subscription_id}/providers/Microsoft.Network/applicationGateways?api-version=2022-10-01"
-        
-        logger.info("Fetching Application Gateway resources...")
-        appgw_response = requests.get(appgw_url, headers=headers)
-        appgw_response.raise_for_status()
-        
-        appgw_data = appgw_response.json()
-        app_gw_resources = appgw_data.get('value', [])
-        
-        logger.info(f"Found {len(app_gw_resources)} Application Gateway resources")
-        
-        app_gw_object_array = []
-        
-        for app_gw_resource in app_gw_resources:
-            logger.info(f"Processing Application Gateway: {app_gw_resource.get('name', 'Unknown')}")
-            
-            # Initialize variables with empty strings
-            waf_policy_name = ""
-            get_app_gw_url = ""
-            get_app_gw_response = ""
-            get_app_gw_maf_url = ""
-            get_app_gw_maf_response = ""
-            msg_name = ""
-            eim = ""
-            production = ""
-            rate_limit_action = ""
-            rate_limit_threshold = ""
-            fdid_anti_bypass = ""
-            bad_bots_anti_bypass = ""
-            bot_ruleset_version = ""
-            managed_ruleset_name = ""
-            managed_ruleset_version = ""
-            split_waf_id = ""
-            app_gw_endpoints = ""
-            
-            # Process each resource
-            for key, value in app_gw_resource.items():
-                if key == 'wafPolicyName':
-                    waf_policy_name = value or ""
-                elif key == 'getAppGWUrl':
-                    get_app_gw_url = value or ""
-                elif key == 'getAppGWResponse':
-                    get_app_gw_response = value or ""
-                elif key == 'getAppGWMAFUrl':
-                    get_app_gw_maf_url = value or ""
-                elif key == 'getAppGWMAFResponse':
-                    get_app_gw_maf_response = value or ""
-                elif key == 'msgName':
-                    msg_name = value or ""
-                elif key == 'eim':
-                    eim = value or ""
-                elif key == 'production':
-                    production = value or ""
-                elif key == 'rateLimitAction':
-                    rate_limit_action = value or ""
-                elif key == 'rateLimitThreshold':
-                    rate_limit_threshold = value or ""
-                elif key == 'fdidAntiBypass':
-                    fdid_anti_bypass = value or ""
-                elif key == 'badBotsAntiBypass':
-                    bad_bots_anti_bypass = value or ""
-                elif key == 'botRulesetVersion':
-                    bot_ruleset_version = value or ""
-                elif key == 'managedRulesetName':
-                    managed_ruleset_name = value or ""
-                elif key == 'managedRulesetVersion':
-                    managed_ruleset_version = value or ""
-                elif key == 'splitWafId':
-                    split_waf_id = value or ""
-            
-            # Get Application Gateway details
-            resource_name = app_gw_resource.get('name', '')
-            resource_group = app_gw_resource.get('resourceGroup', '')
-            subscription_id_from_resource = app_gw_resource.get('subscriptionId', subscription_id)
-            
-            get_app_gw_url = f"https://management.azure.com/subscriptions/{subscription_id_from_resource}/resourceGroups/{resource_group}/providers/Microsoft.Network/applicationGateways/{resource_name}?api-version=2024-05-01"
-            
-            logger.info(f"Fetching details for Application Gateway: {resource_name}")
-            get_app_gw_response = requests.get(get_app_gw_url, headers=headers)
-            get_app_gw_response.raise_for_status()
-            
-            get_app_gw_data = get_app_gw_response.json()
-            
-            # Extract subnet information
-            subnet_id = ""
-            subnet_url = ""
-            
-            gateway_ip_configs = get_app_gw_data.get('properties', {}).get('gatewayIPConfigurations', [])
-            if gateway_ip_configs:
-                subnet_id = gateway_ip_configs[0].get('properties', {}).get('subnet', {}).get('id', '')
-                if subnet_id:
-                    subnet_url = f"https://management.azure.com{subnet_id}?api-version=2023-04-01"
-            
-            # Extract network security group name
-            nsg_name = ""
-            if subnet_url:
-                subnet_response = requests.get(subnet_url, headers=headers)
-                if subnet_response.status_code == 200:
-                    subnet_data = subnet_response.json()
-                    nsg_id = subnet_data.get('properties', {}).get('networkSecurityGroup', {}).get('id', '')
-                    if nsg_id:
-                        nsg_name_parts = nsg_id.split('/')
-                        if nsg_name_parts:
-                            nsg_name = nsg_name_parts[-1].strip("'")
-            
-            # Extract public WAF information
-            public_waf = get_app_gw_data.get('tags', {}).get('PublicWAF', '')
-            
-            # Process HTTP listeners for endpoints
-            app_gw_endpoint_array = []
-            http_listeners = get_app_gw_data.get('properties', {}).get('httpListeners', [])
-            
-            for listener in http_listeners:
-                host_name = listener.get('properties', {}).get('hostName', '')
-                if host_name:
-                    app_gw_endpoint_array.append(host_name)
-            
-            app_gw_endpoints = ",".join(app_gw_endpoint_array)
-            
-            # Extract firewall policy information
-            firewall_policy = get_app_gw_data.get('properties', {}).get('firewallPolicy', {})
-            if firewall_policy:
-                firewall_policy_id = firewall_policy.get('id', '')
-                split_waf_id = firewall_policy_id.split('/')
-                if len(split_waf_id) > 8:
-                    waf_policy_name = split_waf_id[8]
-                    
-                    # Get WAF policy details
-                    subscription_id_waf = split_waf_id[2]
-                    resource_group_waf = split_waf_id[4]
-                    
-                    get_app_gw_maf_url = f"https://management.azure.com/subscriptions/{subscription_id_waf}/resourceGroups/{resource_group_waf}/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/{waf_policy_name}?api-version=2024-05-01"
-                    
-                    get_app_gw_maf_response = requests.get(get_app_gw_maf_url, headers=headers)
-                    if get_app_gw_maf_response.status_code == 200:
-                        get_app_gw_maf_data = get_app_gw_maf_response.json()
-                        
-                        # Process custom rules
-                        custom_rules = get_app_gw_maf_data.get('properties', {}).get('customRules', [])
-                        for custom_rule in custom_rules:
-                            rule_type = custom_rule.get('ruleType', '')
-                            if rule_type == 'RateLimitRule':
-                                rate_limit_action = custom_rule.get('action', '')
-                                rate_limit_threshold = custom_rule.get('rateLimitThreshold', '')
-                        
-                        # Determine FDID Anti Bypass
-                        if public_waf == "Yes":
-                            fdid_custom_rules = [rule for rule in custom_rules if rule.get('name') == 'AllowFDID']
-                            if fdid_custom_rules:
-                                fdid_rule = fdid_custom_rules[0]
-                                if (fdid_rule.get('action') == 'Allow' and 
-                                    fdid_rule.get('state') == 'Enabled'):
-                                    fdid_anti_bypass = "pass"
-                                else:
-                                    fdid_anti_bypass = "FAIL"
-                            else:
-                                fdid_anti_bypass = "FAIL"
-                        else:
-                            fdid_anti_bypass = "no"
-                        
-                        # Process managed rules
-                        managed_rules = get_app_gw_maf_data.get('properties', {}).get('managedRules', {})
-                        managed_rule_sets = managed_rules.get('managedRuleSets', [])
-                        
-                        for managed_ruleset in managed_rule_sets:
-                            ruleset_type = managed_ruleset.get('ruleSetType', '')
-                            if ruleset_type == 'Microsoft_BotManagerRuleSet':
-                                bot_ruleset_version = managed_ruleset.get('ruleSetVersion', '')
-                                bad_bots_anti_bypass = "pass"
-                                
-                                # Check for specific rule overrides
-                                rule_group_overrides = managed_ruleset.get('ruleGroupOverrides', {})
-                                rules = rule_group_overrides.get('rules', [])
-                                
-                                for rule in rules:
-                                    rule_id = rule.get('ruleId', '')
-                                    if rule_id in [100100, 100200, 100300]:
-                                        bad_bots_anti_bypass = "FAIL"
-                                        break
-                            else:
-                                managed_ruleset_name = managed_ruleset.get('ruleSetType', '')
-                                managed_ruleset_version = managed_ruleset.get('ruleSetVersion', '')
-            
-            # Create row values
-            row_value = {
-                'EIM': eim,
-                'Production': production,
-                'AppGwName': app_gw_resource.get('name', ''),
-                'ResourceGroup': app_gw_resource.get('resourceGroup', ''),
-                'SubscriptionId': app_gw_resource.get('subscriptionId', ''),
-                'ITSO': '',  # This would need to be populated based on your logic
-                'ITSODelegate': '',  # This would need to be populated based on your logic
-                'EndpointUrl': app_gw_endpoints,
-                'NSGname': nsg_name,
-                'WAFPolicyName': waf_policy_name,
-                'WAFMode': get_app_gw_maf_data.get('properties', {}).get('policySettings', {}).get('mode', '') if 'get_app_gw_maf_data' in locals() else '',
-                'WAFStatus': get_app_gw_maf_data.get('properties', {}).get('policySettings', {}).get('state', '') if 'get_app_gw_maf_data' in locals() else '',
-                'RateLimitAction': rate_limit_action,
-                'RateLimitThreshold': rate_limit_threshold,
-                'FDIdAntiBypass': fdid_anti_bypass,
-                'BadBotsAntiBypass': bad_bots_anti_bypass,
-                'BotManagerRulesetVersion': bot_ruleset_version,
-                'ManagedRulesetName': managed_ruleset_name,
-                'ManagedRulesetVersion': managed_ruleset_version
-            }
-            
-            app_gw_object_array.append(row_value)
-        
-        return app_gw_object_array
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error during API request: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error during gateway details extraction: {str(e)}")
-        raise
+class GraphAPIError(Exception):
+    pass
 
-def export_to_csv(data, filename="AppGateways.csv"):
-    """
-    Export application gateway data to CSV file
-    
-    Args:
-        data (list): List of application gateway details
-        filename (str): Output CSV filename
-    """
-    try:
-        if not data:
-            logger.warning("No data to export")
-            return
-        
-        fieldnames = [
-            'EIM', 'Production', 'AppGwName', 'ResourceGroup', 'SubscriptionId',
-            'ITSO', 'ITSODelegate', 'EndpointUrl', 'NSGname', 'WAFPolicyName',
-            'WAFMode', 'WAFStatus', 'RateLimitAction', 'RateLimitThreshold',
-            'FDIdAntiBypass', 'BadBotsAntiBypass', 'BotManagerRulesetVersion',
-            'ManagedRulesetName', 'ManagedRulesetVersion'
-        ]
-        
-        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(data)
-        
-        logger.info(f"Data exported successfully to {filename}")
-        
-    except Exception as e:
-        logger.error(f"Error exporting to CSV: {str(e)}")
-        raise
+class MicrosoftGraphBatchProcessor:
+    def __init__(self, config: GraphConfig):
+        self.config = config
+        self.access_token = None
+        self.session = self._create_session()
 
-def main():
-    """
-    Main function to execute the Application Gateway details extraction
-    """
-    # Configuration - Replace with your actual values
-    CLIENT_ID = "your-client-id"
-    CLIENT_SECRET = "your-client-secret"
-    TENANT_ID = "your-tenant-id"
-    TENANT_NAME = "your-tenant-name"
-    SUBSCRIPTION_ID = "your-subscription-id"
-    
-    try:
-        logger.info("Starting Application Gateway details extraction...")
-        
-        # Extract Application Gateway details
-        app_gateway_data = apl_gateway_details(
-            CLIENT_ID, 
-            CLIENT_SECRET, 
-            TENANT_ID, 
-            TENANT_NAME, 
-            SUBSCRIPTION_ID
+    def _create_session(self) -> requests.Session:
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=self.config.retry_attempts,
+            backoff_factor=self.config.retry_backoff,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"]
         )
-        
-        # Export to CSV
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"AppGateways_{timestamp}.csv"
-        export_to_csv(app_gateway_data, output_filename)
-        
-        logger.info(f"Process completed successfully. Found {len(app_gateway_data)} Application Gateways")
-        
-    except Exception as e:
-        logger.error(f"Process failed: {str(e)}")
-        raise
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
-if __name__ == "__main__":
-    main()
+    def authenticate(self):
+        url = f"https://login.microsoftonline.com/{self.config.tenant_id}/oauth2/v2.0/token"
+        data = {
+            'grant_type': 'client_credentials',
+            'client_id': self.config.client_id,
+            'client_secret': self.config.client_secret,
+            'scope': 'https://graph.microsoft.com/.default'
+        }
+        response = self.session.post(url, data=data)
+        if response.status_code != 200:
+            raise GraphAPIError("Authentication failed")
+        self.access_token = response.json()['access_token']
+        logger.info("Authentication successful")
+
+    def _get_headers(self) -> Dict[str, str]:
+        if not self.access_token:
+            raise GraphAPIError("Not authenticated")
+        return {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+
+    def _create_batch_request(self, group_ids: List[str], batch_id_start: int) -> Dict[str, Any]:
+        return {
+            "requests": [
+                {
+                    "id": str(batch_id_start + i),
+                    "method": "GET",
+                    "url": f"/groups/{gid}/members?$select=id,displayName,userPrincipalName,@odata.type"
+                }
+                for i, gid in enumerate(group_ids)
+            ]
+        }
+
+    def _extract_object_type(self, odata_type: str) -> str:
+        if not odata_type:
+            return "Unknown"
+        return odata_type.split("#microsoft.graph.")[-1] if "#microsoft.graph." in odata_type else odata_type
+
+    def _process_batch_response(self, response_data: Dict[str, Any], group_ids: List[str], batch_id_start: int) -> List[Dict[str, Any]]:
+        results = []
+        for response in response_data.get("responses", []):
+            try:
+                request_id = int(response["id"])
+                group_id = group_ids[request_id - batch_id_start]
+                status = response.get("status", 0)
+
+                if status == 200:
+                    members = response["body"].get("value", [])
+                    for member in members:
+                        results.append({
+                            "group_id": group_id,
+                            "object_type": self._extract_object_type(member.get("@odata.type", "")),
+                            "object_id": member.get("id", ""),
+                            "object_name": member.get("displayName", member.get("userPrincipalName", ""))
+                        })
+                    if "@odata.nextLink" in response["body"]:
+                        logger.warning(f"Pagination exists for group: {group_id} — additional pages will be skipped.")
+                else:
+                    logger.warning(f"Group {group_id} returned status {status}")
+            except Exception as e:
+                logger.error(f"Failed to process response: {e}")
+        return results
+
+    def _process_batch_chunk(self, group_ids_chunk: List[str], chunk_index: int) -> List[Dict[str, Any]]:
+        try:
+            batch_id_start = chunk_index * self.config.batch_size
+            batch_request = self._create_batch_request(group_ids_chunk, batch_id_start)
+            url = f"{self.config.base_url}/$batch"
+            response = self.session.post(url, headers=self._get_headers(), json=batch_request, timeout=60)
+
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", "60"))
+                logger.warning(f"Rate limited. Retrying after {retry_after} seconds.")
+                time.sleep(retry_after)
+                response = self.session.post(url, headers=self._get_headers(), json=batch_request, timeout=60)
+
+            response.raise_for_status()
+            return self._process_batch_response(response.json(), group_ids_chunk, batch_id_start)
+        except Exception as e:
+            logger.error(f"Error processing batch {chunk_index}: {e}")
+            return []
+
+    def fetch_group_members_batch(self, group_ids: List[str]) -> List[Dict[str, Any]]:
+        chunks = [group_ids[i:i + self.config.batch_size] for i in range(0, len(group_ids), self.config.batch_size)]
+        all_results = []
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            futures = {executor.submit(self._process_batch_chunk, chunk, i): i for i, chunk in enumerate(chunks)}
+            for future in as_completed(futures):
+                all_results.extend(future.result())
+                time.sleep(self.config.rate_limit_delay)
+        logger.info(f"Fetched members for {len(group_ids)} groups. Total records: {len(all_results)}")
+        return all_results
+
+    def create_spark_dataframe(self, group_ids: List[str], spark: SparkSession) -> DataFrame:
+        if not self.access_token:
+            self.authenticate()
+        data = self.fetch_group_members_batch(group_ids)
+        schema = StructType([
+            StructField("group_id", StringType(), True),
+            StructField("object_type", StringType(), True),
+            StructField("object_id", StringType(), True),
+            StructField("object_name", StringType(), True),
+        ])
+        return spark.createDataFrame(data, schema)
+
+# ------------------ MAIN EXECUTION ------------------
+
+# Start Spark
+spark = SparkSession.builder.appName("GraphGroupMembers").getOrCreate()
+
+# Step 1: Read group IDs
+group_df = spark.read.table(INPUT_CATALOG_TABLE).select("group_id").distinct()
+group_ids = [row["group_id"] for row in group_df.collect()]
+logger.info(f"Loaded {len(group_ids)} group IDs from {INPUT_CATALOG_TABLE}")
+
+# Step 2: Init processor
+config = GraphConfig(
+    tenant_id=TENANT_ID,
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET
+)
+processor = MicrosoftGraphBatchProcessor(config)
+
+# Step 3: Create Spark DataFrame with results
+df_members = processor.create_spark_dataframe(group_ids, spark)
+
+# Step 4: Display or Write
+df_members.show(truncate=False)
+
+# Optional: Write to Delta
+df_members.write.mode("overwrite").format("delta").saveAsTable(OUTPUT_TABLE)
