@@ -1,4 +1,3 @@
-# Databricks notebook compatible
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import StructType, StructField, StringType
 from typing import List, Dict, Any, Optional
@@ -26,7 +25,6 @@ RETRY_ATTEMPTS = 3
 RETRY_BACKOFF = 1.0
 # ---------------------------------------------------------
 
-# Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -65,18 +63,23 @@ class MicrosoftGraphBatchProcessor:
         return session
 
     def authenticate(self):
-        url = f"https://login.microsoftonline.com/{self.config.tenant_id}/oauth2/v2.0/token"
-        data = {
-            'grant_type': 'client_credentials',
-            'client_id': self.config.client_id,
-            'client_secret': self.config.client_secret,
-            'scope': 'https://graph.microsoft.com/.default'
-        }
-        response = self.session.post(url, data=data)
-        if response.status_code != 200:
-            raise GraphAPIError("Authentication failed")
-        self.access_token = response.json()['access_token']
-        logger.info("Authentication successful")
+        try:
+            url = f"https://login.microsoftonline.com/{self.config.tenant_id}/oauth2/v2.0/token"
+            data = {
+                'grant_type': 'client_credentials',
+                'client_id': self.config.client_id,
+                'client_secret': self.config.client_secret,
+                'scope': 'https://graph.microsoft.com/.default'
+            }
+            response = self.session.post(url, data=data)
+            if response.status_code != 200:
+                logger.error(f"Authentication failed with status {response.status_code}: {response.text}")
+                raise GraphAPIError("Authentication failed")
+            self.access_token = response.json()['access_token']
+            logger.info("Authentication successful")
+        except Exception as e:
+            logger.exception("Error during authentication")
+            raise GraphAPIError("Authentication error") from e
 
     def _get_headers(self) -> Dict[str, str]:
         if not self.access_token:
@@ -87,28 +90,42 @@ class MicrosoftGraphBatchProcessor:
             'Accept': 'application/json'
         }
 
-    def _create_batch_request(self, group_ids: List[str], batch_id_start: int) -> Dict[str, Any]:
-        return {
-            "requests": [
-                {
-                    "id": str(batch_id_start + i),
-                    "method": "GET",
-                    "url": f"/groups/{gid}/members?$select=id,displayName,userPrincipalName,@odata.type"
-                }
-                for i, gid in enumerate(group_ids)
-            ]
-        }
-
     def _extract_object_type(self, odata_type: str) -> str:
         if not odata_type:
             return "Unknown"
         return odata_type.split("#microsoft.graph.")[-1] if "#microsoft.graph." in odata_type else odata_type
 
+    def _fetch_paginated_members(self, next_link: str, group_id: str) -> List[Dict[str, Any]]:
+        members = []
+        url = next_link
+        while url:
+            try:
+                response = self.session.get(url, headers=self._get_headers(), timeout=60)
+                response.raise_for_status()
+                body = response.json()
+                for member in body.get("value", []):
+                    members.append({
+                        "group_id": group_id,
+                        "object_type": self._extract_object_type(member.get("@odata.type", "")),
+                        "object_id": member.get("id", ""),
+                        "object_name": member.get("displayName", member.get("userPrincipalName", ""))
+                    })
+                url = body.get("@odata.nextLink")
+                time.sleep(self.config.rate_limit_delay)
+            except Exception as e:
+                logger.warning(f"Pagination failed for group {group_id}: {e}")
+                break
+        return members
+
     def _process_batch_response(self, response_data: Dict[str, Any], group_ids: List[str], batch_id_start: int) -> List[Dict[str, Any]]:
         results = []
+        next_links = []
         for response in response_data.get("responses", []):
             try:
                 request_id = int(response["id"])
+                if request_id - batch_id_start >= len(group_ids):
+                    logger.warning(f"Invalid request_id in batch: {request_id}")
+                    continue
                 group_id = group_ids[request_id - batch_id_start]
                 status = response.get("status", 0)
 
@@ -122,12 +139,26 @@ class MicrosoftGraphBatchProcessor:
                             "object_name": member.get("displayName", member.get("userPrincipalName", ""))
                         })
                     if "@odata.nextLink" in response["body"]:
-                        logger.warning(f"Pagination exists for group: {group_id} — additional pages will be skipped.")
+                        next_links.append((group_id, response["body"]["@odata.nextLink"]))
                 else:
                     logger.warning(f"Group {group_id} returned status {status}")
             except Exception as e:
-                logger.error(f"Failed to process response: {e}")
+                logger.error(f"Error processing response: {e}")
+        for group_id, next_link in next_links:
+            results.extend(self._fetch_paginated_members(next_link, group_id))
         return results
+
+    def _create_batch_request(self, group_ids: List[str], batch_id_start: int) -> Dict[str, Any]:
+        return {
+            "requests": [
+                {
+                    "id": str(batch_id_start + i),
+                    "method": "GET",
+                    "url": f"/groups/{gid}/members?$select=id,displayName,userPrincipalName,@odata.type"
+                }
+                for i, gid in enumerate(group_ids)
+            ]
+        }
 
     def _process_batch_chunk(self, group_ids_chunk: List[str], chunk_index: int) -> List[Dict[str, Any]]:
         try:
@@ -154,8 +185,11 @@ class MicrosoftGraphBatchProcessor:
         with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
             futures = {executor.submit(self._process_batch_chunk, chunk, i): i for i, chunk in enumerate(chunks)}
             for future in as_completed(futures):
-                all_results.extend(future.result())
-                time.sleep(self.config.rate_limit_delay)
+                try:
+                    all_results.extend(future.result())
+                    time.sleep(self.config.rate_limit_delay)
+                except Exception as e:
+                    logger.error(f"Error in future execution: {e}")
         logger.info(f"Fetched members for {len(group_ids)} groups. Total records: {len(all_results)}")
         return all_results
 
@@ -173,15 +207,11 @@ class MicrosoftGraphBatchProcessor:
 
 # ------------------ MAIN EXECUTION ------------------
 
-# Start Spark
-spark = SparkSession.builder.appName("GraphGroupMembers").getOrCreate()
-
-# Step 1: Read group IDs
+spark = SparkSession.builder.appName("GraphGroupMembersWithPagination").getOrCreate()
 group_df = spark.read.table(INPUT_CATALOG_TABLE).select("group_id").distinct()
 group_ids = [row["group_id"] for row in group_df.collect()]
 logger.info(f"Loaded {len(group_ids)} group IDs from {INPUT_CATALOG_TABLE}")
 
-# Step 2: Init processor
 config = GraphConfig(
     tenant_id=TENANT_ID,
     client_id=CLIENT_ID,
@@ -189,11 +219,8 @@ config = GraphConfig(
 )
 processor = MicrosoftGraphBatchProcessor(config)
 
-# Step 3: Create Spark DataFrame with results
 df_members = processor.create_spark_dataframe(group_ids, spark)
-
-# Step 4: Display or Write
 df_members.show(truncate=False)
 
-# Optional: Write to Delta
+# Optional: Write to Delta Table
 df_members.write.mode("overwrite").format("delta").saveAsTable(OUTPUT_TABLE)
